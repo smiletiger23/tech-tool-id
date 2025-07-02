@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import excel_importer
+import subprocess  # Добавлено для открытия директории
 
 
 class FixtureApp(ctk.CTk):
@@ -165,10 +166,15 @@ class FixtureApp(ctk.CTk):
                                           command=self.copy_files_command)
         copy_files_button.grid(row=4, column=0, padx=5, pady=5, sticky="ew")
 
+        # Кнопка открытия директории оснастки
+        open_folder_button = ctk.CTkButton(list_frame, text="Открыть директорию выбранной оснастки",
+                                           command=self.open_fixture_folder_command)
+        open_folder_button.grid(row=5, column=0, padx=5, pady=5, sticky="ew")
+
         # Кнопка удаления оснастки
         delete_fixture_button = ctk.CTkButton(list_frame, text="Удалить выбранную оснастку",
                                               command=self.delete_fixture_command, fg_color="red")
-        delete_fixture_button.grid(row=5, column=0, padx=5, pady=5, sticky="ew")
+        delete_fixture_button.grid(row=6, column=0, padx=5, pady=5, sticky="ew")
 
     def set_status(self, message, is_error=False):
         self.status_var.set(f"Статус: {message}")
@@ -178,13 +184,16 @@ class FixtureApp(ctk.CTk):
             self.status_label.configure(text_color="green")
         self.update_idletasks()
 
-    def load_all_combobox_data(self):
+    def load_all_combobox_data(self, event=None):  # Added event=None for consistent calling
         print("DEBUG: Загрузка всех данных для Combobox'ов...")
         self.categories_data = self.db_manager.get_categories()
         if self.categories_data:
             options = [f"{c['CategoryCode']} ({c['CategoryName']})" for c in self.categories_data]
             self.category_combobox.configure(values=options)
-            self.category_code_var.set(options[0])
+            # Only set default if current value is not in options or is default placeholder
+            current_category_val = self.category_code_var.get()
+            if current_category_val not in options and "Выберите" in current_category_val:
+                self.category_code_var.set(options[0])
             self.on_category_selected(self.category_code_var.get())
         else:
             self.category_combobox.configure(values=[])
@@ -196,7 +205,10 @@ class FixtureApp(ctk.CTk):
         if self.operations_data:
             options = [f"{o['OperationCode']} ({o['OperationName']})" for o in self.operations_data]
             self.operation_combobox.configure(values=options)
-            self.operation_code_var.set(options[0])
+            # Only set default if current value is not in options or is default placeholder
+            current_operation_val = self.operation_code_var.get()
+            if current_operation_val not in options and "Выберите" in current_operation_val:
+                self.operation_code_var.set(options[0])
         else:
             self.operation_combobox.configure(values=[])
             self.operation_code_var.set("Нет доступных операций")
@@ -242,7 +254,10 @@ class FixtureApp(ctk.CTk):
         else:
             options = [f"{s['SeriesCode']} ({s['SeriesName']})" for s in self.series_data]
             self.series_combobox.configure(values=options)
-            self.series_code_var.set(options[0])
+            # Only set default if current value is not in options or is default placeholder
+            current_series_val = self.series_code_var.get()
+            if current_series_val not in options and "Выберите" in current_series_val:
+                self.series_code_var.set(options[0])
 
         self.on_series_selected(self.series_code_var.get())
 
@@ -283,7 +298,10 @@ class FixtureApp(ctk.CTk):
         else:
             options = [f"{i['ItemNumberCode']} ({i['ItemNumberName']})" for i in self.items_data]
             self.item_number_combobox.configure(values=options)
-            self.item_number_code_var.set(options[0])
+            # Only set default if current value is not in options or is default placeholder
+            current_item_val = self.item_number_code_var.get()
+            if current_item_val not in options and "Выберите" in current_item_val:
+                self.item_number_code_var.set(options[0])
 
         self.update_fixture_number_combobox()
         self._refresh_fixture_list_with_current_selection()
@@ -495,6 +513,43 @@ class FixtureApp(ctk.CTk):
                 is_error=True)
             messagebox.showwarning("Копирование с ошибками",
                                    f"Некоторые файлы не были скопированы.\nОшибки:\n" + "\n".join(failed_copies))
+
+    def open_fixture_folder_command(self):
+        """Opens the file explorer to the directory of the selected fixture."""
+        if self.selected_fixture_id_in_list is None:
+            self.set_status("Ошибка: Не выбрана оснастка для открытия директории.", is_error=True)
+            messagebox.showerror("Ошибка", "Пожалуйста, выберите оснастку из списка, кликнув на нее.")
+            return
+
+        fixture_data = self.db_manager.get_fixture_id_by_id(self.selected_fixture_id_in_list)
+        if not fixture_data or not fixture_data.get('BasePath'):
+            self.set_status(
+                f"Ошибка: Не удалось получить путь для выбранной оснастки ID {self.selected_fixture_id_in_list}.",
+                is_error=True)
+            messagebox.showerror("Ошибка", "Не удалось найти путь к папке выбранной оснастки.")
+            return
+
+        folder_path = fixture_data['BasePath']
+
+        if not os.path.exists(folder_path):
+            self.set_status(f"Ошибка: Директория не существует: '{folder_path}'", is_error=True)
+            messagebox.showerror("Ошибка", f"Директория не существует:\n{folder_path}")
+            return
+
+        try:
+            # For Windows
+            if os.name == 'nt':
+                os.startfile(folder_path)
+            # For macOS
+            elif os.uname().sysname == 'Darwin':
+                subprocess.Popen(['open', folder_path])
+            # For Linux
+            else:
+                subprocess.Popen(['xdg-open', folder_path])
+            self.set_status(f"Открыта директория: '{folder_path}'", is_error=False)
+        except Exception as e:
+            self.set_status(f"Ошибка при открытии директории '{folder_path}': {e}", is_error=True)
+            messagebox.showerror("Ошибка", f"Не удалось открыть директорию:\n{folder_path}\nОшибка: {e}")
 
     def on_fixture_list_click(self, event):
         """Handles click events on the fixture list textbox to select a fixture."""
@@ -723,7 +778,6 @@ class FixtureApp(ctk.CTk):
             if success:
                 report_message = "Импорт данных из Excel завершен успешно.\n\n"
 
-                # Report added items
                 added_summary = []
                 for sheet_name, count in added_counts.items():
                     if count > 0:
@@ -733,7 +787,6 @@ class FixtureApp(ctk.CTk):
                 else:
                     report_message += "Новых записей не добавлено.\n\n"
 
-                # Report updated items
                 updated_summary = []
                 for sheet_name, count in updated_counts.items():
                     if count > 0:
@@ -743,13 +796,11 @@ class FixtureApp(ctk.CTk):
                 else:
                     report_message += "Записей не обновлено.\n\n"
 
-                # Report missing items
                 missing_summary = []
                 for sheet_name, items in missing_from_excel_data.items():
                     if items:
                         missing_summary.append(f"  {sheet_name}: {len(items)} записей отсутствуют в Excel:")
                         for item in items:
-                            # Format missing item for display (e.g., CategoryCode (CategoryName))
                             if sheet_name == "Категории":
                                 missing_summary.append(
                                     f"    {item.get('CategoryCode', 'N/A')} ({item.get('CategoryName', 'N/A')})")
@@ -763,7 +814,7 @@ class FixtureApp(ctk.CTk):
                                 missing_summary.append(
                                     f"    {item.get('OperationCode', 'N/A')} ({item.get('OperationName', 'N/A')})")
                             else:
-                                missing_summary.append(f"    {item}")  # Fallback for unknown sheet type
+                                missing_summary.append(f"    {item}")
                 if missing_summary:
                     report_message += "Записи в базе данных, отсутствующие в Excel:\n" + "\n".join(missing_summary)
                 else:
