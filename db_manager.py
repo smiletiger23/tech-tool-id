@@ -1,7 +1,7 @@
 import sqlite3
 import os
-import shutil  # Added for shutil.rmtree
-import re  # Added for re.match in parse_id_string
+import shutil
+import re
 
 
 class FixtureDBManager:
@@ -97,12 +97,25 @@ class FixtureDBManager:
             print(f"Ошибка при создании таблиц: {e}")
 
     def add_category(self, code, name):
+        """Добавляет или обновляет категорию. Возвращает 'added', 'updated' или 'skipped'."""
         try:
-            self.cursor.execute("INSERT OR IGNORE INTO Categories (CategoryCode, CategoryName) VALUES (?, ?)",
-                                (code, name))
-            self.conn.commit()
+            self.cursor.execute("SELECT CategoryName FROM Categories WHERE CategoryCode = ?", (code,))
+            existing_name = self.cursor.fetchone()
+
+            if existing_name:
+                if existing_name['CategoryName'] != name:
+                    self.cursor.execute("UPDATE Categories SET CategoryName = ? WHERE CategoryCode = ?", (name, code))
+                    self.conn.commit()
+                    return 'updated'
+                else:
+                    return 'skipped'
+            else:
+                self.cursor.execute("INSERT INTO Categories (CategoryCode, CategoryName) VALUES (?, ?)", (code, name))
+                self.conn.commit()
+                return 'added'
         except sqlite3.Error as e:
-            print(f"Ошибка при добавлении категории {code}: {e}")
+            print(f"Ошибка при обработке категории {code}: {e}")
+            return 'error'
 
     def get_categories(self):
         try:
@@ -113,14 +126,34 @@ class FixtureDBManager:
             return []
 
     def add_series_description(self, category_code, series_code, series_name):
+        """Добавляет или обновляет серию. Возвращает 'added', 'updated' или 'skipped'."""
         try:
             self.cursor.execute(
-                "INSERT OR IGNORE INTO Series (CategoryCode, SeriesCode, SeriesName) VALUES (?, ?, ?)",
-                (category_code, series_code, series_name)
+                "SELECT SeriesName FROM Series WHERE CategoryCode = ? AND SeriesCode = ?",
+                (category_code, series_code)
             )
-            self.conn.commit()
+            existing_name = self.cursor.fetchone()
+
+            if existing_name:
+                if existing_name['SeriesName'] != series_name:
+                    self.cursor.execute(
+                        "UPDATE Series SET SeriesName = ? WHERE CategoryCode = ? AND SeriesCode = ?",
+                        (series_name, category_code, series_code)
+                    )
+                    self.conn.commit()
+                    return 'updated'
+                else:
+                    return 'skipped'
+            else:
+                self.cursor.execute(
+                    "INSERT INTO Series (CategoryCode, SeriesCode, SeriesName) VALUES (?, ?, ?)",
+                    (category_code, series_code, series_name)
+                )
+                self.conn.commit()
+                return 'added'
         except sqlite3.Error as e:
-            print(f"Ошибка при добавлении серии {series_code}: {e}")
+            print(f"Ошибка при обработке серии {series_code} для категории {category_code}: {e}")
+            return 'error'
 
     def get_series_by_category(self, category_code):
         try:
@@ -142,14 +175,34 @@ class FixtureDBManager:
             return []
 
     def add_item_number_description(self, category_code, series_code, item_number_code, item_number_name):
+        """Добавляет или обновляет изделие. Возвращает 'added', 'updated' или 'skipped'."""
         try:
             self.cursor.execute(
-                "INSERT OR IGNORE INTO ItemNumbers (CategoryCode, SeriesCode, ItemNumberCode, ItemNumberName) VALUES (?, ?, ?, ?)",
-                (category_code, series_code, item_number_code, item_number_name)
+                "SELECT ItemNumberName FROM ItemNumbers WHERE CategoryCode = ? AND SeriesCode = ? AND ItemNumberCode = ?",
+                (category_code, series_code, item_number_code)
             )
-            self.conn.commit()
+            existing_name = self.cursor.fetchone()
+
+            if existing_name:
+                if existing_name['ItemNumberName'] != item_number_name:
+                    self.cursor.execute(
+                        "UPDATE ItemNumbers SET ItemNumberName = ? WHERE CategoryCode = ? AND SeriesCode = ? AND ItemNumberCode = ?",
+                        (item_number_name, category_code, series_code, item_number_code)
+                    )
+                    self.conn.commit()
+                    return 'updated'
+                else:
+                    return 'skipped'
+            else:
+                self.cursor.execute(
+                    "INSERT INTO ItemNumbers (CategoryCode, SeriesCode, ItemNumberCode, ItemNumberName) VALUES (?, ?, ?, ?)",
+                    (category_code, series_code, item_number_code, item_number_name)
+                )
+                self.conn.commit()
+                return 'added'
         except sqlite3.Error as e:
-            print(f"Ошибка при добавлении изделия {item_number_code}: {e}")
+            print(f"Ошибка при обработке изделия {item_number_code} для категории {category_code} и серии {series_code}: {e}")
+            return 'error'
 
     def get_items_by_category_and_series(self, category_code, series_code):
         try:
@@ -171,12 +224,26 @@ class FixtureDBManager:
             return []
 
     def add_operation_description(self, operation_code, operation_name):
+        """Добавляет или обновляет операцию. Возвращает 'added', 'updated' или 'skipped'."""
         try:
-            self.cursor.execute("INSERT OR IGNORE INTO Operations (OperationCode, OperationName) VALUES (?, ?)",
-                                (operation_code, operation_name))
-            self.conn.commit()
+            self.cursor.execute("SELECT OperationName FROM Operations WHERE OperationCode = ?", (operation_code,))
+            existing_name = self.cursor.fetchone()
+
+            if existing_name:
+                if existing_name['OperationName'] != operation_name:
+                    self.cursor.execute("UPDATE Operations SET OperationName = ? WHERE OperationCode = ?", (operation_name, operation_code))
+                    self.conn.commit()
+                    return 'updated'
+                else:
+                    return 'skipped'
+            else:
+                self.cursor.execute("INSERT INTO Operations (OperationCode, OperationName) VALUES (?, ?)",
+                                    (operation_code, operation_name))
+                self.conn.commit()
+                return 'added'
         except sqlite3.Error as e:
-            print(f"Ошибка при добавлении операции {operation_code}: {e}")
+            print(f"Ошибка при обработке операции {operation_code}: {e}")
+            return 'error'
 
     def get_operation_descriptions(self):
         try:
@@ -197,13 +264,12 @@ class FixtureDBManager:
             print(f"Оснастка с FullIDString '{full_id_string}' уже существует. Добавление отменено.")
             return None
 
-        # ИЗМЕНЕНО: Формирование BasePath теперь использует full_id_string как имя конечной папки
         base_path = os.path.join(
             self.base_db_dir,
             parsed_id['Category'],
             f"{parsed_id['Category']}.{parsed_id['Series']}{parsed_id['ItemNumber']}",
             f"{parsed_id['Category']}.{parsed_id['Series']}{parsed_id['ItemNumber']}.{parsed_id['Operation']}{parsed_id['FixtureNumber']}",
-            full_id_string # ИСПОЛЬЗУЕМ full_id_string В КАЧЕСТВЕ ИМЕНИ КОНЕЧНОЙ ПАПКИ
+            full_id_string
         )
 
         try:
@@ -409,7 +475,6 @@ class FixtureDBManager:
         VV (AssemblyVersionCode): 2 символа
         W (IntermediateVersion): 0 или 1 символ (опционально)
         """
-        # Updated regex to match the parsing logic and handle optional 'W'
         match = re.match(
             r"^([A-Z]{2,3})\.([0-9A-Z]{1})([0-9A-Z]{2})\.([0-9A-Z]{1})([0-9A-Z]{2})\.([0-9A-Z]{2})([0-9A-Z]{2})([0-9A-Z]{2})-([0-9A-Z]{2})([0-9A-Z]{0,1})$",
             full_id_string)
@@ -428,7 +493,7 @@ class FixtureDBManager:
                 'PartInAssembly': match.group(7),
                 'PartQuantity': match.group(8),
                 'AssemblyVersionCode': match.group(9),
-                'IntermediateVersion': match.group(10) if match.group(10) else None  # Store as None if empty
+                'IntermediateVersion': match.group(10) if match.group(10) else None
             }
         except Exception as e:
             print(f"Непредвиденная ошибка при парсинге ID '{full_id_string}': {e}")

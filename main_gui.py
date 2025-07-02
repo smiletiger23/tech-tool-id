@@ -1,6 +1,6 @@
 import customtkinter as ctk
 import tkinter as tk
-from tkinter import filedialog, messagebox  # Import filedialog
+from tkinter import filedialog, messagebox
 from db_manager import FixtureDBManager
 import os
 import re
@@ -49,13 +49,16 @@ class FixtureApp(ctk.CTk):
         # 3. Инициализация менеджера базы данных
         self.db_manager = FixtureDBManager(db_name="my_fixtures_app.db", base_db_dir="fixture_database_root_app")
 
-        # 4. Проверяем, пуста ли база данных
+        # 4. Проверяем, пуста ли база данных (или не содержит категорий)
+        # Если пуста, выполняем первоначальный импорт из Excel
         if not self.db_manager.get_categories():
             print("DEBUG: База данных пуста или не содержит категорий. Выполняем первоначальный импорт из Excel.")
             excel_file = "classifier_data.xlsx"
             importer = excel_importer.ExcelClassifierImporter(self.db_manager)
             try:
-                if importer.import_from_excel(excel_file):
+                success, added_counts, updated_counts, skipped_counts, missing_from_excel_data = importer.import_from_excel(
+                    excel_file)
+                if success:
                     print("DEBUG: Первоначальный импорт завершен успешно.")
                     self.set_status("Первоначальный импорт данных завершен.", is_error=False)
                 else:
@@ -129,7 +132,7 @@ class FixtureApp(ctk.CTk):
         create_button.grid(row=len(labels), column=0, columnspan=4, padx=5, pady=10, sticky="ew")
 
         # Кнопка импорта из Excel
-        import_excel_button = ctk.CTkButton(control_frame, text="Импортировать из Excel",
+        import_excel_button = ctk.CTkButton(control_frame, text="Импортировать из Excel (обновить)",
                                             command=self.import_excel_data_command)
         import_excel_button.grid(row=len(labels) + 1, column=0, columnspan=4, padx=5, pady=10, sticky="ew")
 
@@ -415,13 +418,12 @@ class FixtureApp(ctk.CTk):
             messagebox.showerror("Ошибка", f"Ошибка парсинга ID '{full_id_string}'.")
             return
 
-        # ИЗМЕНЕНО: Создание базовой папки для оснастки теперь использует full_id_string как имя конечной папки
         base_folder_path = os.path.join(
             self.db_manager.base_db_dir,
             parsed_id_for_path['Category'],
             f"{parsed_id_for_path['Category']}.{parsed_id_for_path['Series']}{parsed_id_for_path['ItemNumber']}",
             f"{parsed_id_for_path['Category']}.{parsed_id_for_path['Series']}{parsed_id_for_path['ItemNumber']}.{parsed_id_for_path['Operation']}{parsed_id_for_path['FixtureNumber']}",
-            full_id_string  # ИСПОЛЬЗУЕМ full_id_string В КАЧЕСТВЕ ИМЕНИ КОНЕЧНОЙ ПАПКИ
+            full_id_string
         )
 
         try:
@@ -496,15 +498,11 @@ class FixtureApp(ctk.CTk):
 
     def on_fixture_list_click(self, event):
         """Handles click events on the fixture list textbox to select a fixture."""
-        # Get the index of the clicked character
         index = self.fixture_list_textbox.index(f"@{event.x},{event.y}")
         line = int(index.split('.')[0])
 
-        # Clear previous selection highlight
         self.fixture_list_textbox.tag_remove("highlight", "1.0", "end")
 
-        # Check if the clicked line is a data row (not header or separator)
-        # The first two lines are header and separator
         if line > 2 and line in self.fixture_id_line_map:
             self.selected_fixture_id_in_list = self.fixture_id_line_map[line]
             self.fixture_list_textbox.tag_add("highlight", f"{line}.0", f"{line}.end")
@@ -547,7 +545,7 @@ class FixtureApp(ctk.CTk):
         """Загружает и отображает список оснасток в текстовом поле."""
         self.fixture_list_textbox.configure(state="normal")
         self.fixture_list_textbox.delete("1.0", "end")
-        self.fixture_id_line_map = {}  # Clear the map
+        self.fixture_id_line_map = {}
 
         fixtures = self.db_manager.get_fixture_ids_with_descriptions(
             category_code=category_code,
@@ -588,7 +586,7 @@ class FixtureApp(ctk.CTk):
         self.fixture_list_textbox.insert("end", header + "\n")
         self.fixture_list_textbox.insert("end", "-" * len(header) + "\n")
 
-        current_line = 3  # Start counting from line 3 for data rows
+        current_line = 3
 
         for fixture in fixtures:
             category_display = fixture.get('CategoryName', fixture.get('Category', ''))
@@ -709,38 +707,80 @@ class FixtureApp(ctk.CTk):
         return True
 
     def import_excel_data_command(self):
-        if messagebox.askyesno("Подтверждение импорта",
-                               "Это удалит существующую базу данных и импортирует данные из Excel заново. Продолжить?"):
-            self.set_status("Начинается импорт данных из Excel...", is_error=False)
+        """
+        Обрабатывает интеллектуальный импорт данных из Excel в БД по нажатию кнопки.
+        Не удаляет существующую БД, а добавляет новые данные и сообщает об отсутствующих.
+        """
+        self.set_status("Начинается интеллектуальный импорт данных из Excel...", is_error=False)
 
-            if self.db_manager.conn:
-                self.db_manager.close()
+        excel_file_path = "classifier_data.xlsx"
+        importer = excel_importer.ExcelClassifierImporter(self.db_manager)
 
-            db_file_path = os.path.join(self.db_manager.base_db_dir, self.db_manager.db_name)
-            if os.path.exists(db_file_path):
-                try:
-                    os.remove(db_file_path)
-                    print(f"База данных '{db_file_path}' успешно удалена.")
-                except OSError as e:
-                    self.set_status(f"Ошибка при удалении базы данных: {e}", is_error=True)
-                    messagebox.showerror("Ошибка", f"Не удалось удалить существующую базу данных: {e}")
-                    return
+        try:
+            success, added_counts, updated_counts, skipped_counts, missing_from_excel_data = importer.import_from_excel(
+                excel_file_path)
 
-            self.db_manager = FixtureDBManager(db_name="my_fixtures_app.db", base_db_dir="fixture_database_root_app")
+            if success:
+                report_message = "Импорт данных из Excel завершен успешно.\n\n"
 
-            excel_file_path = "classifier_data.xlsx"
-            importer = excel_importer.ExcelClassifierImporter(self.db_manager)
+                # Report added items
+                added_summary = []
+                for sheet_name, count in added_counts.items():
+                    if count > 0:
+                        added_summary.append(f"  {sheet_name}: {count} новых записей")
+                if added_summary:
+                    report_message += "Добавлено:\n" + "\n".join(added_summary) + "\n\n"
+                else:
+                    report_message += "Новых записей не добавлено.\n\n"
 
-            if importer.import_from_excel(excel_file_path):
-                self.set_status("Импорт данных из Excel завершен успешно.", is_error=False)
+                # Report updated items
+                updated_summary = []
+                for sheet_name, count in updated_counts.items():
+                    if count > 0:
+                        updated_summary.append(f"  {sheet_name}: {count} обновленных записей")
+                if updated_summary:
+                    report_message += "Обновлено:\n" + "\n".join(updated_summary) + "\n\n"
+                else:
+                    report_message += "Записей не обновлено.\n\n"
+
+                # Report missing items
+                missing_summary = []
+                for sheet_name, items in missing_from_excel_data.items():
+                    if items:
+                        missing_summary.append(f"  {sheet_name}: {len(items)} записей отсутствуют в Excel:")
+                        for item in items:
+                            # Format missing item for display (e.g., CategoryCode (CategoryName))
+                            if sheet_name == "Категории":
+                                missing_summary.append(
+                                    f"    {item.get('CategoryCode', 'N/A')} ({item.get('CategoryName', 'N/A')})")
+                            elif sheet_name == "Серии":
+                                missing_summary.append(
+                                    f"    {item.get('CategoryCode', 'N/A')}-{item.get('SeriesCode', 'N/A')} ({item.get('SeriesName', 'N/A')})")
+                            elif sheet_name == "Изделия":
+                                missing_summary.append(
+                                    f"    {item.get('CategoryCode', 'N/A')}-{item.get('SeriesCode', 'N/A')}-{item.get('ItemNumberCode', 'N/A')} ({item.get('ItemNumberName', 'N/A')})")
+                            elif sheet_name == "Операции":
+                                missing_summary.append(
+                                    f"    {item.get('OperationCode', 'N/A')} ({item.get('OperationName', 'N/A')})")
+                            else:
+                                missing_summary.append(f"    {item}")  # Fallback for unknown sheet type
+                if missing_summary:
+                    report_message += "Записи в базе данных, отсутствующие в Excel:\n" + "\n".join(missing_summary)
+                else:
+                    report_message += "Все записи из базы данных найдены в Excel."
+
+                self.set_status("Импорт завершен. Подробности в отчете.", is_error=False)
+                messagebox.showinfo("Отчет по импорту Excel", report_message)
+
                 self.load_all_combobox_data()
                 self._refresh_fixture_list_with_current_selection()
             else:
                 self.set_status("Ошибка при импорте данных из Excel. Проверьте консоль.", is_error=True)
                 messagebox.showerror("Ошибка импорта",
                                      "Произошла ошибка при импорте данных из Excel. Проверьте консоль для деталей.")
-        else:
-            self.set_status("Импорт из Excel отменен.", is_error=False)
+        except Exception as e:
+            self.set_status(f"Критическая ошибка при импорте: {e}", is_error=True)
+            messagebox.showerror("Критическая ошибка импорта", f"Произошла критическая ошибка при импорте: {e}")
 
     def delete_fixture_command(self):
         """Deletes the selected fixture from the database and its associated folder."""
@@ -765,10 +805,10 @@ class FixtureApp(ctk.CTk):
             if self.db_manager.delete_fixture_id(self.selected_fixture_id_in_list, delete_files=True):
                 self.set_status(f"Оснастка ID {self.selected_fixture_id_in_list} ({full_id_string}) успешно удалена.",
                                 is_error=False)
-                self.selected_fixture_id_in_list = None  # Reset selection
-                self.fixture_list_textbox.tag_remove("highlight", "1.0", "end")  # Clear highlight
+                self.selected_fixture_id_in_list = None
+                self.fixture_list_textbox.tag_remove("highlight", "1.0", "end")
                 self._refresh_fixture_list_with_current_selection()
-                self.update_fixture_number_combobox()  # Refresh TT combobox as well
+                self.update_fixture_number_combobox()
             else:
                 self.set_status(
                     f"Не удалось удалить оснастку ID {self.selected_fixture_id_in_list}. Проверьте консоль.",

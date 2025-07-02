@@ -3,177 +3,214 @@ import openpyxl
 from db_manager import FixtureDBManager
 import shutil
 
+
 class ExcelClassifierImporter:
     def __init__(self, db_manager_instance):
         self.db_manager = db_manager_instance
         self.sheet_configs = {
             "Категории": {
                 "handler": self.db_manager.add_category,
+                "get_all_from_db": self.db_manager.get_categories,
                 "columns": ["CategoryCode", "CategoryName"],
-                "required_cols": ["CategoryCode", "CategoryName"]
+                "required_cols": ["CategoryCode", "CategoryName"],
+                "key_cols": ["CategoryCode"]
             },
             "Серии": {
                 "handler": self.db_manager.add_series_description,
+                "get_all_from_db": self.db_manager.get_series_descriptions,
                 "columns": ["CategoryCode", "SeriesCode", "SeriesName"],
-                "required_cols": ["CategoryCode", "SeriesCode", "SeriesName"]
+                "required_cols": ["CategoryCode", "SeriesCode", "SeriesName"],
+                "key_cols": ["CategoryCode", "SeriesCode"]
             },
             "Изделия": {
                 "handler": self.db_manager.add_item_number_description,
+                "get_all_from_db": self.db_manager.get_item_number_descriptions,
                 "columns": ["CategoryCode", "SeriesCode", "ItemNumberCode", "ItemNumberName"],
-                "required_cols": ["CategoryCode", "SeriesCode", "ItemNumberCode", "ItemNumberName"]
+                "required_cols": ["CategoryCode", "SeriesCode", "ItemNumberCode", "ItemNumberName"],
+                "key_cols": ["CategoryCode", "SeriesCode", "ItemNumberCode"]
             },
             "Операции": {
                 "handler": self.db_manager.add_operation_description,
+                "get_all_from_db": self.db_manager.get_operation_descriptions,
                 "columns": ["OperationCode", "OperationName"],
-                "required_cols": ["OperationCode", "OperationName"]
+                "required_cols": ["OperationCode", "OperationName"],
+                "key_cols": ["OperationCode"]
             },
-            # Листы "Оснастки" и "Версии_Сборок" удалены
         }
 
-    def import_from_excel(self, excel_file_path):
-        if not os.path.exists(excel_file_path):
-            print(f"Ошибка: Файл '{excel_file_path}' не найден.")
-            return False
+    def _generate_key(self, row_data, key_cols):
+        """Генерирует уникальный ключ из данных строки на основе ключевых столбцов."""
+        # Ensure all key_cols are present in row_data before joining
+        if not all(col in row_data for col in key_cols):
+            return None  # Or raise an error, depending on desired strictness
+        return "-".join(str(row_data[col]) for col in key_cols)
+
+    def import_from_excel(self, excel_file):
+        """
+        Выполняет интеллектуальный импорт из Excel:
+        - Добавляет новые записи в базу данных.
+        - Обновляет описания существующих записей.
+        - Сообщает о записях, присутствующих в БД, но отсутствующих в Excel.
+        - Не удаляет существующие оснастки.
+        Возвращает (success_status, added_counts, updated_counts, skipped_counts, missing_from_excel_data).
+        """
+        if not os.path.exists(excel_file):
+            print(f"Ошибка: Файл Excel '{excel_file}' не найден.")
+            return False, {}, {}, {}, {}
 
         try:
-            workbook = openpyxl.load_workbook(excel_file_path)
+            workbook = openpyxl.load_workbook(excel_file)
         except Exception as e:
-            print(f"Ошибка при открытии Excel-файла '{excel_file_path}': {e}")
-            return False
+            print(f"Ошибка при открытии файла Excel '{excel_file}': {e}")
+            return False, {}, {}, {}, {}
 
-        print(f"\n--- Начинаем импорт данных из '{excel_file_path}' ---")
+        print(f"\n--- Начинаем интеллектуальный импорт данных из '{excel_file}' ---")
+
+        added_counts = {sheet_name: 0 for sheet_name in self.sheet_configs.keys()}
+        updated_counts = {sheet_name: 0 for sheet_name in self.sheet_configs.keys()}
+        skipped_counts = {sheet_name: 0 for sheet_name in self.sheet_configs.keys()}
+        missing_from_excel_data = {sheet_name: [] for sheet_name in self.sheet_configs.keys()}
+
+        overall_success = True
 
         for sheet_name, config in self.sheet_configs.items():
-            if sheet_name in workbook.sheetnames:
-                print(f"\nОбработка листа: '{sheet_name}'")
-                sheet = workbook[sheet_name]
-                header = [cell.value for cell in sheet[1]]
+            print(f"Обработка листа: '{sheet_name}'")
+            if sheet_name not in workbook.sheetnames:
+                print(f"  Предупреждение: Лист '{sheet_name}' не найден в файле Excel. Пропуск.")
+                overall_success = False
+                continue
 
-                missing_cols = [col for col in config["required_cols"] if col not in header]
-                if missing_cols:
-                    print(f"  Внимание: На листе '{sheet_name}' отсутствуют необходимые колонки: {', '.join(missing_cols)}. Пропуск листа.")
-                    continue
+            sheet = workbook[sheet_name]
+            headers = [cell.value for cell in sheet[1]]
+            header_to_col_idx = {header: idx for idx, header in enumerate(headers)}
 
-                imported_count = 0
-                skipped_count = 0
-                for row_index, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
-                    row_data = {}
-                    for col_idx, cell_value in enumerate(row):
-                        if col_idx < len(header):
-                            # Убедимся, что значение - строка, прежде чем применять strip()
-                            row_data[header[col_idx]] = str(cell_value).strip() if cell_value is not None else ''
+            excel_data_for_sheet = {}  # To store data from current Excel sheet by key
 
-                    args = []
-                    is_valid_row = True
-                    for col_name in config["columns"]:
-                        value = row_data.get(col_name)
-                        # Изменение здесь: проверка на пустую строку или None после strip()
-                        if value is None or value == '':
-                            print(f"  Строка {row_index}: Пропуск из-за отсутствия данных в колонке '{col_name}'.")
-                            is_valid_row = False
-                            break
-                        args.append(value) # value уже очищено от пробелов и не является None
-
-                    if not is_valid_row:
-                        skipped_count += 1
-                        continue
-
-                    # Если все данные валидны, вызываем обработчик
-                    if config["handler"](*args):
-                        imported_count += 1
+            # Read data from Excel
+            for row_idx in range(2, sheet.max_row + 1):
+                row_data = {}
+                is_row_valid = True
+                for col_name in config["columns"]:
+                    col_idx = header_to_col_idx.get(col_name)
+                    if col_idx is not None:
+                        cell_value = sheet.cell(row=row_idx, column=col_idx + 1).value
+                        row_data[col_name] = cell_value
                     else:
-                        skipped_count += 1
+                        print(f"  Предупреждение: Колонка '{col_name}' не найдена на листе '{sheet_name}'.")
+                        is_row_valid = False
+                        break
 
-                print(f"  Импортировано записей: {imported_count}")
-                print(f"  Пропущено записей (дубликаты, ошибки): {skipped_count}")
-            else:
-                print(f"  Лист '{sheet_name}' не найден в файле. Пропуск.")
+                # Basic validation for required columns
+                if not all(row_data.get(col) is not None for col in config["required_cols"]):
+                    print(
+                        f"  Строка {row_idx}: Пропуск из-за отсутствия данных в обязательных колонках: {config['required_cols']}.")
+                    skipped_counts[sheet_name] += 1
+                    is_row_valid = False
 
-        print("\n--- Импорт данных завершен ---")
-        return True
+                if is_row_valid:
+                    key = self._generate_key(row_data, config["key_cols"])
+                    if key:
+                        excel_data_for_sheet[key] = row_data
+                    else:
+                        print(f"  Строка {row_idx}: Не удалось сгенерировать ключ для записи. Пропуск.")
+                        skipped_counts[sheet_name] += 1
+                        overall_success = False
 
+            # Fetch existing data from DB for this sheet type
+            existing_db_data_for_sheet = {
+                self._generate_key(d, config["key_cols"]): d
+                for d in config["get_all_from_db"]()
+                if self._generate_key(d, config["key_cols"]) is not None
+            }
+
+            # Compare Excel data with DB data
+            for excel_key, excel_row in excel_data_for_sheet.items():
+                if sheet_name == "Категории":
+                    status = self.db_manager.add_category(excel_row["CategoryCode"], excel_row["CategoryName"])
+                elif sheet_name == "Серии":
+                    status = self.db_manager.add_series_description(excel_row["CategoryCode"], excel_row["SeriesCode"],
+                                                                    excel_row["SeriesName"])
+                elif sheet_name == "Изделия":
+                    status = self.db_manager.add_item_number_description(excel_row["CategoryCode"],
+                                                                         excel_row["SeriesCode"],
+                                                                         excel_row["ItemNumberCode"],
+                                                                         excel_row["ItemNumberName"])
+                elif sheet_name == "Операции":
+                    status = self.db_manager.add_operation_description(excel_row["OperationCode"],
+                                                                       excel_row["OperationName"])
+                else:
+                    status = 'error'  # Should not happen with defined sheet_configs
+
+                if status == 'added':
+                    added_counts[sheet_name] += 1
+                elif status == 'updated':
+                    updated_counts[sheet_name] += 1
+                elif status == 'skipped':
+                    skipped_counts[sheet_name] += 1
+                elif status == 'error':
+                    overall_success = False
+                    print(f"  Ошибка при обработке записи из Excel: {excel_row}")
+
+            # Identify entries in DB but missing from Excel
+            for db_key, db_row in existing_db_data_for_sheet.items():
+                if db_key not in excel_data_for_sheet:
+                    missing_from_excel_data[sheet_name].append(db_row)
+
+        print("\n--- Отчет по импорту ---")
+        for sheet_name in self.sheet_configs.keys():
+            print(f"Лист '{sheet_name}':")
+            print(f"  Добавлено записей: {added_counts[sheet_name]}")
+            print(f"  Обновлено записей: {updated_counts[sheet_name]}")
+            print(f"  Пропущено записей (не изменились или ошибки в Excel): {skipped_counts[sheet_name]}")
+            if missing_from_excel_data[sheet_name]:
+                print(f"  Записи в БД, отсутствующие в Excel:")
+                for item in missing_from_excel_data[sheet_name]:
+                    print(f"    {item}")
+
+        print("--- Импорт данных завершен ---")
+        return overall_success, added_counts, updated_counts, skipped_counts, missing_from_excel_data
+
+
+# Example usage for testing (can be removed in final version)
 if __name__ == "__main__":
-    excel_file = "classifier_data.xlsx" # Новое имя файла для минимальной версии
+    db_name = "my_fixtures_app_test.db"
+    base_db_dir = "fixture_database_root_app_test"
+    excel_file = "classifier_data.xlsx"  # Make sure this file exists for testing
 
-    def create_sample_excel_minimal(file_name):
-        workbook = openpyxl.Workbook()
+    # Clean up previous test DB for a fresh start
+    if os.path.exists(base_db_dir):
+        shutil.rmtree(base_db_dir)
+    os.makedirs(base_db_dir, exist_ok=True)
 
-        # Категории
-        sheet = workbook.active
-        sheet.title = "Категории"
-        sheet.append(["CategoryCode", "CategoryName"])
-        sheet.append(["CS", "Коммутаторы"])
-        sheet.append(["NEO", "Неорос"])
-        sheet.append(["ROU", "Маршрутизаторы"])
-
-        # Серии
-        sheet = workbook.create_sheet("Серии")
-        sheet.append(["CategoryCode", "SeriesCode", "SeriesName"])
-        sheet.append(["CS", "X", "Расширенная серия коммутаторов"])
-        sheet.append(["CS", "A", "Стандартная серия коммутаторов"])
-        sheet.append(["ROU", "X", "Расширенная серия маршрутизаторов"])
-
-        # Изделия
-        sheet = workbook.create_sheet("Изделия")
-        sheet.append(["CategoryCode", "SeriesCode", "ItemNumberCode", "ItemNumberName"])
-        sheet.append(["CS", "X", "01", "CS2124"])
-        sheet.append(["NEO", "A", "02", "NEO-FPGA-B"])
-        sheet.append(["CS", "X", "10", "CS21XX (Старая серия)"])
-        sheet.append(["ROU", "X", "03", "Router-X-Pro"])
-
-        # Операции
-        sheet = workbook.create_sheet("Операции")
-        sheet.append(["OperationCode", "OperationName"])
-        sheet.append(["F", "Фрезерование"])
-        sheet.append(["D", "Сверление"])
-        sheet.append(["M", "Монтаж"])
-
-        workbook.save(file_name)
-        print(f"Пример Excel-файла '{file_name}' создан.")
-
-    # Создаем тестовый Excel-файл
-    #create_sample_excel_minimal(excel_file) # <- Убедитесь, что эта строка закомментирована, если вы используете свой реальный файл classifier_data.xlsx
-
-    db_name = "my_fixtures.db"
-    base_dir = "fixture_database_root_app" # Убедитесь, что это имя каталога соответствует вашему проекту
-
-    # Удаление существующей базы данных и папки для чистого запуска
-    db_file_path = os.path.join(base_dir, db_name)
-    if os.path.exists(db_file_path):
-        print(f"Удаление существующей базы данных: {db_file_path}")
-        os.remove(db_file_path)
-    # Если вы хотите удалять всю папку, используйте это (но будьте осторожны):
-    # if os.path.exists(base_dir):
-    #     print(f"Удаление существующей корневой папки: {base_dir}")
-    #     shutil.rmtree(base_dir)
-    os.makedirs(base_dir, exist_ok=True) # Создаем папку, если она не существует
-
-    db_manager = FixtureDBManager(db_name, base_db_dir=base_dir)
-
+    db_manager = FixtureDBManager(db_name=db_name, base_db_dir=base_db_dir)
     importer = ExcelClassifierImporter(db_manager)
 
-    importer.import_from_excel(excel_file)
+    print("\n--- Первый импорт (ожидаем добавление всех данных) ---")
+    success, added, updated, skipped, missing = importer.import_from_excel(excel_file)
+    if success:
+        print("Первый импорт успешен.")
+        print(f"Добавлено: {added}")
+        print(f"Обновлено: {updated}")
+        print(f"Пропущено: {skipped}")
+        print(f"Отсутствует в Excel (после первого импорта, должно быть пусто): {missing}")
+    else:
+        print("Первый импорт не удался.")
 
-    print("\n--- Проверка импортированных категорий ---")
-    print(db_manager.get_categories())
-    print("\n--- Проверка импортированных серий ---")
-    print(db_manager.get_series_descriptions())
-    print("\n--- Проверка импортированных изделий ---")
-    print(db_manager.get_item_number_descriptions())
-    print("\n--- Проверка импортированных операций ---")
-    print(db_manager.get_operation_descriptions())
+    # Add some dummy data directly to DB to simulate changes not in Excel
+    db_manager.add_category("ZZ", "Test Category Z")
+    db_manager.add_operation_description("OPZ", "Test Operation Z")
+    # Simulate a change in Excel for an existing item (e.g., change name of CS category)
+    # This would require manually editing classifier_data.xlsx for testing this specific scenario.
 
-
-    # Пробуем добавить тестовую оснастку, чтобы убедиться, что пути генерируются корректно
-    print("\n--- Тестирование добавления оснасток ---")
-    # Добавьте здесь реальные коды из вашего Excel, если они отличаются от тестовых
-    db_manager.add_fixture_id("CS.X01.F12.010101-V0Z") # Пример: Category=CS, Series=X, Item=01, Operation=F, Fixture=12, AssemblyVersion=V0, IntermediateVersion=Z
-    db_manager.add_fixture_id("ROU.X03.M34.010101-X1")  # Пример: Category=ROU, Series=X, Item=03, Operation=M, Fixture=34, AssemblyVersion=X1, IntermediateVersion=None
-
-    print("\n--- Все идентификаторы после теста ---")
-    all_ids_after_test = db_manager.get_fixture_ids_with_descriptions()
-    for item in all_ids_after_test:
-        print(f"ID: {item['id']}, Category: {item['CategoryName']}, Series: {item['SeriesName']}, Item: {item['ItemNumberName']}, Operation: {item['OperationName']}, FixtureNumber: {item['FixtureNumber']}, AssemblyVersion: {item['AssemblyVersionCode']}, IntermediateVersion: {item['IntermediateVersion']}, Base Path: {item['BasePath']}")
+    print("\n--- Второй импорт (ожидаем пропуск существующих, обновление измененных и отчет по отсутствующим) ---")
+    success, added, updated, skipped, missing = importer.import_from_excel(excel_file)
+    if success:
+        print("Второй импорт успешен.")
+        print(f"Добавлено во втором импорте (должно быть 0 для существующих): {added}")
+        print(f"Обновлено во втором импорте (зависит от изменений в Excel): {updated}")
+        print(f"Пропущено во втором импорте: {skipped}")
+        print(f"Отсутствует в Excel (ожидаем ZZ и OPZ, если они не были добавлены в Excel): {missing}")
+    else:
+        print("Второй импорт не удался.")
 
     db_manager.close()
-    # os.remove(excel_file) # Опционально: удалить тестовый файл Excel
