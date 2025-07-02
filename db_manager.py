@@ -294,7 +294,8 @@ class FixtureDBManager:
                 f.Operation, o.OperationName,
                 f.FixtureNumber,
                 f.UniqueParts, f.PartInAssembly, f.PartQuantity,
-                f.AssemblyVersionCode, f.IntermediateVersion,
+                f.AssemblyVersionCode,
+                IFNULL(f.IntermediateVersion, '') AS IntermediateVersion, -- ИЗМЕНЕНО: Преобразуем NULL в пустую строку
                 f.BasePath,
                 f.FullIDString
             FROM
