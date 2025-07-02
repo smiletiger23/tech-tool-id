@@ -83,7 +83,7 @@ class FixtureDBManager:
                     PartQuantity TEXT NOT NULL,
                     AssemblyVersionCode TEXT NOT NULL,
                     IntermediateVersion TEXT, -- Может быть пустым
-                    BasePath TEXT NOT NULL UNIQUE,
+                    BasePath TEXT NOT NULL UNIQUE, -- Этот столбец должен быть уникальным
                     FullIDString TEXT NOT NULL UNIQUE,
                     FOREIGN KEY (Category) REFERENCES Categories(CategoryCode),
                     FOREIGN KEY (Category, Series) REFERENCES Series(CategoryCode, SeriesCode),
@@ -197,11 +197,13 @@ class FixtureDBManager:
             print(f"Оснастка с FullIDString '{full_id_string}' уже существует. Добавление отменено.")
             return None
 
+        # ИЗМЕНЕНО: Формирование BasePath теперь использует full_id_string как имя конечной папки
         base_path = os.path.join(
             self.base_db_dir,
             parsed_id['Category'],
-            f"{parsed_id['Series']}{parsed_id['ItemNumber']}",
-            f"{parsed_id['Operation']}{parsed_id['FixtureNumber']}"
+            f"{parsed_id['Category']}.{parsed_id['Series']}{parsed_id['ItemNumber']}",
+            f"{parsed_id['Category']}.{parsed_id['Series']}{parsed_id['ItemNumber']}.{parsed_id['Operation']}{parsed_id['FixtureNumber']}",
+            full_id_string # ИСПОЛЬЗУЕМ full_id_string В КАЧЕСТВЕ ИМЕНИ КОНЕЧНОЙ ПАПКИ
         )
 
         try:
@@ -295,7 +297,7 @@ class FixtureDBManager:
                 f.FixtureNumber,
                 f.UniqueParts, f.PartInAssembly, f.PartQuantity,
                 f.AssemblyVersionCode,
-                IFNULL(f.IntermediateVersion, '') AS IntermediateVersion, -- ИЗМЕНЕНО: Преобразуем NULL в пустую строку
+                IFNULL(f.IntermediateVersion, '') AS IntermediateVersion,
                 f.BasePath,
                 f.FullIDString
             FROM

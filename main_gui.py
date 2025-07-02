@@ -1,11 +1,11 @@
 import customtkinter as ctk
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import filedialog, messagebox  # Import filedialog
 from db_manager import FixtureDBManager
 import os
-import re  # Для парсинга ID, если это еще нужно в GUI
-import shutil  # Для создания/удаления папок
-import excel_importer  # Добавлено: Импорт модуля для импорта Excel
+import re
+import shutil
+import excel_importer
 
 
 class FixtureApp(ctk.CTk):
@@ -15,38 +15,58 @@ class FixtureApp(ctk.CTk):
         self.title("Управление Оснастками (Tech-Tool-ID)")
         self.geometry("1000x800")
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(0, weight=0)  # Для элементов управления
-        self.grid_rowconfigure(1, weight=1)  # Для списка оснасток
+        self.grid_rowconfigure(0, weight=0)
+        self.grid_rowconfigure(1, weight=1)
 
-        # Инициализация менеджера базы данных
-        self.db_manager = FixtureDBManager(db_name="my_fixtures_app.db", base_db_dir="fixture_database_root_app")
-
-        # Переменные для Combobox'ов
+        # 1. Инициализация переменных (до создания виджетов, чтобы они были доступны)
         self.category_code_var = ctk.StringVar(value="Выберите категорию")
         self.series_code_var = ctk.StringVar(value="Выберите серию")
         self.item_number_code_var = ctk.StringVar(value="Выберите изделие")
         self.operation_code_var = ctk.StringVar(value="Выберите операцию")
         self.fixture_number_code_var = ctk.StringVar(value="Заполните поля выше")
 
-        # Переменные для текстовых полей
         self.unique_parts_aa_var = ctk.StringVar(value="01")
         self.part_in_assembly_bb_var = ctk.StringVar(value="01")
         self.part_quantity_cc_var = ctk.StringVar(value="01")
         self.assembly_version_vv_var = ctk.StringVar(value="V0")
-        self.intermediate_version_w_var = ctk.StringVar(value="")  # W может быть пустым
+        self.intermediate_version_w_var = ctk.StringVar(value="")
 
-        # Переменная для статусной строки
         self.status_var = ctk.StringVar(value="Статус: Готово")
 
-        # Данные для Combobox'ов (будут загружены из БД)
         self.categories_data = []
         self.series_data = []
         self.items_data = []
         self.operations_data = []
 
+        # Variables for file operations
+        self.selected_files_to_copy = []
+        self.selected_fixture_id_in_list = None
+        self.fixture_id_line_map = {}  # Maps line number in textbox to fixture ID
+
+        # 2. Создание виджетов
         self._create_widgets()
+
+        # 3. Инициализация менеджера базы данных
+        self.db_manager = FixtureDBManager(db_name="my_fixtures_app.db", base_db_dir="fixture_database_root_app")
+
+        # 4. Проверяем, пуста ли база данных
+        if not self.db_manager.get_categories():
+            print("DEBUG: База данных пуста или не содержит категорий. Выполняем первоначальный импорт из Excel.")
+            excel_file = "classifier_data.xlsx"
+            importer = excel_importer.ExcelClassifierImporter(self.db_manager)
+            try:
+                if importer.import_from_excel(excel_file):
+                    print("DEBUG: Первоначальный импорт завершен успешно.")
+                    self.set_status("Первоначальный импорт данных завершен.", is_error=False)
+                else:
+                    print("DEBUG: Ошибка при первоначальном импорте данных.")
+                    self.set_status("Ошибка при первоначальном импорте данных. Проверьте консоль.", is_error=True)
+            except Exception as e:
+                print(f"DEBUG: Критическая ошибка при первоначальном импорте: {e}")
+                self.set_status(f"Критическая ошибка при первоначальном импорте: {e}", is_error=True)
+
+        # 5. Загрузка данных для Combobox'ов и обновление списка оснасток
         self.load_all_combobox_data()
-        # Загружаем список оснасток при старте приложения, используя текущие значения фильтров
         self._refresh_fixture_list_with_current_selection()
 
     def _create_widgets(self):
@@ -61,7 +81,7 @@ class FixtureApp(ctk.CTk):
                          self.operation_code_var, self.fixture_number_code_var]
         combobox_commands = [self.on_category_selected, self.on_series_selected, self.on_item_number_selected,
                              self.on_operation_selected, self.on_fixture_number_selected]
-        combobox_options = [[], [], [], [], []]  # Будут заполнены позже
+        combobox_options = [[], [], [], [], []]
 
         for i, label_text in enumerate(labels):
             label = ctk.CTkLabel(control_frame, text=label_text)
@@ -111,12 +131,11 @@ class FixtureApp(ctk.CTk):
         # Кнопка импорта из Excel
         import_excel_button = ctk.CTkButton(control_frame, text="Импортировать из Excel",
                                             command=self.import_excel_data_command)
-        import_excel_button.grid(row=len(labels) + 1, column=0, columnspan=4, padx=5, pady=10,
-                                 sticky="ew")  # Разместил ниже кнопки "Создать"
+        import_excel_button.grid(row=len(labels) + 1, column=0, columnspan=4, padx=5, pady=10, sticky="ew")
 
         # Статусная строка
         self.status_label = ctk.CTkLabel(control_frame, textvariable=self.status_var, wraplength=400)
-        self.status_label.grid(row=len(labels) + 2, column=0, columnspan=4, padx=5, pady=5, sticky="ew")  # Обновил row
+        self.status_label.grid(row=len(labels) + 2, column=0, columnspan=4, padx=5, pady=5, sticky="ew")
 
         # Фрейм для списка оснасток
         list_frame = ctk.CTkFrame(self)
@@ -124,15 +143,15 @@ class FixtureApp(ctk.CTk):
         list_frame.grid_columnconfigure(0, weight=1)
         list_frame.grid_rowconfigure(1, weight=1)
 
-        # FIX: Assign list_label to self.list_label
-        self.list_label = ctk.CTkLabel(list_frame, text="Список оснасток для изделия '00':")  # Заголовок списка
+        # Инициализация self.list_label
+        self.list_label = ctk.CTkLabel(list_frame, text="Список оснасток для изделия '00':")
         self.list_label.grid(row=0, column=0, padx=5, pady=5, sticky="nw")
 
-        self.fixture_list_textbox = ctk.CTkTextbox(list_frame, wrap="none")  # wrap="none" для горизонтального скролла
+        self.fixture_list_textbox = ctk.CTkTextbox(list_frame, wrap="none")
         self.fixture_list_textbox.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
-        self.fixture_list_textbox.configure(state="disabled")  # Только для чтения
+        self.fixture_list_textbox.configure(state="normal")
+        self.fixture_list_textbox.bind("<ButtonRelease-1>", self.on_fixture_list_click)
 
-        # Кнопки для работы с файлами (пока заглушки)
         file_label = ctk.CTkLabel(list_frame, text="Файлы для копирования:")
         file_label.grid(row=2, column=0, padx=5, pady=5, sticky="w")
 
@@ -143,35 +162,38 @@ class FixtureApp(ctk.CTk):
                                           command=self.copy_files_command)
         copy_files_button.grid(row=4, column=0, padx=5, pady=5, sticky="ew")
 
+        # Кнопка удаления оснастки
+        delete_fixture_button = ctk.CTkButton(list_frame, text="Удалить выбранную оснастку",
+                                              command=self.delete_fixture_command, fg_color="red")
+        delete_fixture_button.grid(row=5, column=0, padx=5, pady=5, sticky="ew")
+
     def set_status(self, message, is_error=False):
         self.status_var.set(f"Статус: {message}")
         if is_error:
             self.status_label.configure(text_color="red")
         else:
             self.status_label.configure(text_color="green")
-        self.update_idletasks()  # Обновить GUI немедленно
+        self.update_idletasks()
 
     def load_all_combobox_data(self):
         print("DEBUG: Загрузка всех данных для Combobox'ов...")
-        # Загрузка категорий
         self.categories_data = self.db_manager.get_categories()
         if self.categories_data:
             options = [f"{c['CategoryCode']} ({c['CategoryName']})" for c in self.categories_data]
             self.category_combobox.configure(values=options)
-            self.category_code_var.set(options[0])  # Устанавливаем первый элемент по умолчанию
-            self.on_category_selected(self.category_code_var.get())  # Вызываем, чтобы загрузить серии и изделия
+            self.category_code_var.set(options[0])
+            self.on_category_selected(self.category_code_var.get())
         else:
             self.category_combobox.configure(values=[])
             self.category_code_var.set("Нет доступных категорий")
             self.category_combobox.configure(state="disabled")
             self.set_status("Ошибка: Нет доступных категорий в базе данных.", is_error=True)
 
-        # Загрузка операций
         self.operations_data = self.db_manager.get_operation_descriptions()
         if self.operations_data:
             options = [f"{o['OperationCode']} ({o['OperationName']})" for o in self.operations_data]
             self.operation_combobox.configure(values=options)
-            self.operation_code_var.set(options[0])  # Устанавливаем первый элемент по умолчанию
+            self.operation_code_var.set(options[0])
         else:
             self.operation_combobox.configure(values=[])
             self.operation_code_var.set("Нет доступных операций")
@@ -200,10 +222,10 @@ class FixtureApp(ctk.CTk):
             self.fixture_number_code_var.set("Заполните поля выше")
             self.fixture_number_combobox.configure(state="disabled")
             print("DEBUG: Категория не выбрана, сброс зависимых полей.")
-            self._refresh_fixture_list_with_current_selection()  # Обновляем список при сбросе
+            self._refresh_fixture_list_with_current_selection()
             return
 
-        self.series_combobox.configure(state="readonly")  # Включаем Combobox Серии
+        self.series_combobox.configure(state="readonly")
 
         self.series_data = self.db_manager.get_series_by_category(category_code)
 
@@ -217,7 +239,7 @@ class FixtureApp(ctk.CTk):
         else:
             options = [f"{s['SeriesCode']} ({s['SeriesName']})" for s in self.series_data]
             self.series_combobox.configure(values=options)
-            self.series_code_var.set(options[0])  # Устанавливаем первый элемент по умолчанию
+            self.series_code_var.set(options[0])
 
         self.on_series_selected(self.series_code_var.get())
 
@@ -240,10 +262,10 @@ class FixtureApp(ctk.CTk):
             self.fixture_number_code_var.set("Заполните поля выше")
             self.fixture_number_combobox.configure(state="disabled")
             print("DEBUG: Серия или Категория не выбраны, сброс зависимых полей.")
-            self._refresh_fixture_list_with_current_selection()  # Обновляем список при сбросе
+            self._refresh_fixture_list_with_current_selection()
             return
 
-        self.item_number_combobox.configure(state="readonly")  # Включаем Combobox Изделия
+        self.item_number_combobox.configure(state="readonly")
 
         self.items_data = self.db_manager.get_items_by_category_and_series(category_code, series_code)
 
@@ -258,10 +280,10 @@ class FixtureApp(ctk.CTk):
         else:
             options = [f"{i['ItemNumberCode']} ({i['ItemNumberName']})" for i in self.items_data]
             self.item_number_combobox.configure(values=options)
-            self.item_number_code_var.set(options[0])  # Устанавливаем первый элемент по умолчанию
+            self.item_number_code_var.set(options[0])
 
         self.update_fixture_number_combobox()
-        self._refresh_fixture_list_with_current_selection()  # Обновляем список при изменении серии
+        self._refresh_fixture_list_with_current_selection()
 
     def on_item_number_selected(self, event=None):
         item_number_display_text = self.item_number_code_var.get()
@@ -269,8 +291,8 @@ class FixtureApp(ctk.CTk):
         item_number_code = self._get_code_from_display_text(item_number_display_text)
         print(f"DEBUG: _get_code_from_display_text input: '{item_number_display_text}'")
         print(f"DEBUG: _get_code_from_display_text output (parsed): '{item_number_code}'")
-        self.update_fixture_number_combobox()  # Обновляем TT при выборе Изделия
-        self._refresh_fixture_list_with_current_selection()  # Обновляем список оснасток для выбранного Изделия
+        self.update_fixture_number_combobox()
+        self._refresh_fixture_list_with_current_selection()
 
     def on_operation_selected(self, event=None):
         operation_display_text = self.operation_code_var.get()
@@ -278,30 +300,27 @@ class FixtureApp(ctk.CTk):
         operation_code = self._get_code_from_display_text(operation_display_text)
         print(f"DEBUG: _get_code_from_display_text input: '{operation_display_text}'")
         print(f"DEBUG: _get_code_from_display_text output (parsed): '{operation_code}'")
-        self.update_fixture_number_combobox()  # Обновляем TT при выборе Операции
-        self._refresh_fixture_list_with_current_selection()  # Обновляем список при изменении операции
+        self.update_fixture_number_combobox()
+        self._refresh_fixture_list_with_current_selection()
 
     def on_fixture_number_selected(self, event=None):
         fixture_number_display_text = self.fixture_number_code_var.get()
         print(f"DEBUG: on_fixture_number_selected вызван с '{fixture_number_display_text}'")
 
         if fixture_number_display_text == "<Создать новый TT>":
-            self.generate_next_fixture_number()  # Генерируем новый TT
+            self.generate_next_fixture_number()
             print("DEBUG: Выбран '<Создать новый TT>'.")
         else:
-            # Если выбран существующий TT, просто обновляем переменную
             self.fixture_number_code_var.set(fixture_number_display_text)
             print(f"DEBUG: Выбран существующий TT: '{fixture_number_display_text}'")
 
     def update_fixture_number_combobox(self):
-        """Обновляет выпадающий список номеров оснасток (TT) и устанавливает выбор по умолчанию."""
         print("DEBUG: update_fixture_number_combobox вызван.")
         category_code = self._get_code_from_display_text(self.category_code_var.get())
         series_code = self._get_code_from_display_text(self.series_code_var.get())
         item_number_code = self._get_code_from_display_text(self.item_number_code_var.get())
         operation_code = self._get_code_from_display_text(self.operation_code_var.get())
 
-        # Проверка, что все необходимые поля выбраны и не содержат "Выберите..." или "Нет данных"
         if "Выберите" in category_code or "Нет данных" in category_code or \
                 "Выберите" in series_code or "Нет данных" in series_code or \
                 "Выберите" in item_number_code or "Нет данных" in item_number_code or \
@@ -312,7 +331,7 @@ class FixtureApp(ctk.CTk):
             print("DEBUG: Не все поля выбраны для обновления TT.")
             return
 
-        self.fixture_number_combobox.configure(state="readonly")  # Включаем Combobox TT
+        self.fixture_number_combobox.configure(state="readonly")
 
         existing_tts = self.db_manager.get_existing_fixture_numbers(
             category_code, series_code, item_number_code, operation_code
@@ -323,15 +342,12 @@ class FixtureApp(ctk.CTk):
         options = ["<Создать новый TT>"] + existing_tts
         self.fixture_number_combobox.configure(values=options)
 
-        # Устанавливаем выбор по умолчанию: либо первый из существующих, либо "Создать новый TT"
         if existing_tts:
-            self.fixture_number_code_var.set(existing_tts[0])  # По умолчанию выбираем первый существующий TT
+            self.fixture_number_code_var.set(existing_tts[0])
         else:
-            self.fixture_number_code_var.set("<Создать новый TT>")  # Если нет существующих, предлагаем создать новый
+            self.fixture_number_code_var.set("<Создать новый TT>")
             print("DEBUG: Нет существующих TT, выбран '<Создать новый TT>'.")
 
-        # Сразу вызываем обработчик, чтобы TT сгенерировался, если выбран "<Создать новый TT>"
-        # Или чтобы переменная обновилась, если выбран существующий TT
         self.on_fixture_number_selected(self.fixture_number_code_var.get())
         print("DEBUG: update_fixture_number_combobox завершен.")
 
@@ -370,17 +386,15 @@ class FixtureApp(ctk.CTk):
         assembly_version = self.assembly_version_vv_var.get().upper()
         intermediate_version = self.intermediate_version_w_var.get().upper()
 
-        # Валидация всех полей перед созданием ID
         if "Выберите" in category or "Нет данных" in category or \
                 "Выберите" in series or "Нет данных" in series or \
                 "Выберите" in item_number or "Нет данных" in item_number or \
                 "Выберите" in operation or "Нет данных" in operation or \
-                "Заполните" in fixture_number:  # Проверяем, что TT сгенерирован
+                "Заполните" in fixture_number:
             self.set_status("Пожалуйста, заполните все поля классификатора.", is_error=True)
             messagebox.showerror("Ошибка", "Пожалуйста, заполните все поля классификатора.")
             return
 
-        # Дополнительная валидация для AA, BB, CC, VV, W
         if not self.validate_aa_bb_input() or \
                 not self.validate_vv_input() or \
                 not self.validate_w_input():
@@ -388,8 +402,6 @@ class FixtureApp(ctk.CTk):
             messagebox.showerror("Ошибка", "Ошибка валидации дополнительных польных полей. Проверьте формат.")
             return
 
-        # Формируем полную строку ID оснастки
-        # Формат: Category.Series_ItemNumber.Operation_FixtureNumber.UniqueParts-AssemblyVersion-IntermediateVersion
         full_id_string = (
             f"{category}.{series}{item_number}.{operation}{fixture_number}."
             f"{unique_parts}{part_in_assembly}{part_quantity}-"
@@ -397,24 +409,20 @@ class FixtureApp(ctk.CTk):
         )
         print(f"DEBUG: Сформированная строка ID: '{full_id_string}'")
 
-        # Парсинг строки ID для получения отдельных компонентов (используем метод из db_manager)
         parsed_id_for_path = self.db_manager.parse_id_string(full_id_string)
         if not parsed_id_for_path:
             self.set_status(f"Ошибка парсинга ID '{full_id_string}'.", is_error=True)
             messagebox.showerror("Ошибка", f"Ошибка парсинга ID '{full_id_string}'.")
             return
 
-        # Создание базовой папки для оснастки
-        # Используем данные из распарсенного ID, чтобы путь был консистентным
-        # Базовая папка должна быть до уровня FixtureNumber (TT)
-        base_path_parts = [
+        # ИЗМЕНЕНО: Создание базовой папки для оснастки теперь использует full_id_string как имя конечной папки
+        base_folder_path = os.path.join(
             self.db_manager.base_db_dir,
             parsed_id_for_path['Category'],
-            f"{parsed_id_for_path['Category']}.{parsed_id_for_path['Series']} ({self._get_name_from_code(parsed_id_for_path['Series'], 'series')})",
-            f"{parsed_id_for_path['Category']}.{parsed_id_for_path['Series']}{parsed_id_for_path['ItemNumber']} ({self._get_name_from_code(parsed_id_for_path['ItemNumber'], 'item_number')})",
-            f"{parsed_id_for_path['Category']}.{parsed_id_for_path['Series']}{parsed_id_for_path['ItemNumber']}.{parsed_id_for_path['Operation']}{parsed_id_for_path['FixtureNumber']}"
-        ]
-        base_folder_path = os.path.join(*base_path_parts)
+            f"{parsed_id_for_path['Category']}.{parsed_id_for_path['Series']}{parsed_id_for_path['ItemNumber']}",
+            f"{parsed_id_for_path['Category']}.{parsed_id_for_path['Series']}{parsed_id_for_path['ItemNumber']}.{parsed_id_for_path['Operation']}{parsed_id_for_path['FixtureNumber']}",
+            full_id_string  # ИСПОЛЬЗУЕМ full_id_string В КАЧЕСТВЕ ИМЕНИ КОНЕЧНОЙ ПАПКИ
+        )
 
         try:
             os.makedirs(base_folder_path, exist_ok=True)
@@ -424,20 +432,93 @@ class FixtureApp(ctk.CTk):
             messagebox.showerror("Ошибка", f"Ошибка создания папки: {e}")
             return
 
-        # Добавляем оснастку в БД
         fixture_id = self.db_manager.add_fixture_id(full_id_string)
         if fixture_id:
             self.set_status(f"Оснастка {full_id_string} успешно добавлена. ID в БД: {fixture_id}")
-            # Обновляем список оснасток после добавления
             self._refresh_fixture_list_with_current_selection()
         else:
             self.set_status(f"Не удалось добавить оснастку {full_id_string}.", is_error=True)
 
     def select_files_command(self):
-        messagebox.showinfo("Выбор файлов", "Функция выбора файлов пока не реализована.")
+        """Allows user to select multiple files for copying."""
+        file_paths = filedialog.askopenfilenames(
+            title="Выберите файлы для копирования",
+            filetypes=[("Все файлы", "*.*")]
+        )
+        if file_paths:
+            self.selected_files_to_copy = list(file_paths)
+            self.set_status(f"Выбрано файлов для копирования: {len(self.selected_files_to_copy)}")
+        else:
+            self.selected_files_to_copy = []
+            self.set_status("Выбор файлов отменен.", is_error=False)
 
     def copy_files_command(self):
-        messagebox.showinfo("Копирование файлов", "Функция копирования файлов пока не реализована.")
+        """Copies selected files to the folder of the selected fixture."""
+        if not self.selected_files_to_copy:
+            self.set_status("Ошибка: Не выбраны файлы для копирования.", is_error=True)
+            messagebox.showerror("Ошибка копирования", "Пожалуйста, выберите файлы для копирования.")
+            return
+
+        if self.selected_fixture_id_in_list is None:
+            self.set_status("Ошибка: Не выбрана оснастка для копирования.", is_error=True)
+            messagebox.showerror("Ошибка копирования", "Пожалуйста, выберите оснастку из списка, кликнув на нее.")
+            return
+
+        fixture_data = self.db_manager.get_fixture_id_by_id(self.selected_fixture_id_in_list)
+        if not fixture_data or not fixture_data.get('BasePath'):
+            self.set_status(
+                f"Ошибка: Не удалось получить путь для выбранной оснастки ID {self.selected_fixture_id_in_list}.",
+                is_error=True)
+            messagebox.showerror("Ошибка копирования", "Не удалось найти путь к папке выбранной оснастки.")
+            return
+
+        destination_folder = fixture_data['BasePath']
+
+        copied_count = 0
+        failed_copies = []
+
+        for file_path in self.selected_files_to_copy:
+            try:
+                shutil.copy2(file_path, destination_folder)
+                copied_count += 1
+            except Exception as e:
+                failed_copies.append(f"{os.path.basename(file_path)}: {e}")
+
+        if copied_count == len(self.selected_files_to_copy):
+            self.set_status(f"Успешно скопировано {copied_count} файл(ов) в '{destination_folder}'.", is_error=False)
+            messagebox.showinfo("Копирование завершено", f"Все {copied_count} файл(ов) успешно скопированы.")
+        else:
+            self.set_status(
+                f"Скопировано {copied_count} из {len(self.selected_files_to_copy)} файл(ов). Ошибки: {len(failed_copies)}.",
+                is_error=True)
+            messagebox.showwarning("Копирование с ошибками",
+                                   f"Некоторые файлы не были скопированы.\nОшибки:\n" + "\n".join(failed_copies))
+
+    def on_fixture_list_click(self, event):
+        """Handles click events on the fixture list textbox to select a fixture."""
+        # Get the index of the clicked character
+        index = self.fixture_list_textbox.index(f"@{event.x},{event.y}")
+        line = int(index.split('.')[0])
+
+        # Clear previous selection highlight
+        self.fixture_list_textbox.tag_remove("highlight", "1.0", "end")
+
+        # Check if the clicked line is a data row (not header or separator)
+        # The first two lines are header and separator
+        if line > 2 and line in self.fixture_id_line_map:
+            self.selected_fixture_id_in_list = self.fixture_id_line_map[line]
+            self.fixture_list_textbox.tag_add("highlight", f"{line}.0", f"{line}.end")
+            self.fixture_list_textbox.tag_config("highlight", background="lightblue", foreground="black")
+
+            fixture_data = self.db_manager.get_fixture_id_by_id(self.selected_fixture_id_in_list)
+            if fixture_data:
+                self.set_status(
+                    f"Выбрана оснастка для копирования: ID {self.selected_fixture_id_in_list} ({fixture_data.get('FullIDString', 'N/A')}).")
+            else:
+                self.set_status(f"Выбрана оснастка с ID {self.selected_fixture_id_in_list}.", is_error=False)
+        else:
+            self.selected_fixture_id_in_list = None
+            self.set_status("Выбор оснастки сброшен. Пожалуйста, кликните на строку оснастки.", is_error=False)
 
     def _refresh_fixture_list_with_current_selection(self):
         """Helper to call load_fixtures_to_list with current combobox selections."""
@@ -446,7 +527,6 @@ class FixtureApp(ctk.CTk):
         item_number_code = self._get_code_from_display_text(self.item_number_code_var.get())
         operation_code = self._get_code_from_display_text(self.operation_code_var.get())
 
-        # Если комбобоксы в состоянии "Выберите..." или "Нет данных", передаем None
         if "Выберите" in category_code or "Нет данных" in category_code:
             category_code = None
         if "Выберите" in series_code or "Нет данных" in series_code:
@@ -467,8 +547,8 @@ class FixtureApp(ctk.CTk):
         """Загружает и отображает список оснасток в текстовом поле."""
         self.fixture_list_textbox.configure(state="normal")
         self.fixture_list_textbox.delete("1.0", "end")
+        self.fixture_id_line_map = {}  # Clear the map
 
-        # Получаем данные из БД с учетом всех фильтров
         fixtures = self.db_manager.get_fixture_ids_with_descriptions(
             category_code=category_code,
             series_code=series_code,
@@ -476,7 +556,6 @@ class FixtureApp(ctk.CTk):
             operation_code=operation_code
         )
 
-        # Обновляем заголовок списка в зависимости от примененных фильтров
         filter_display_parts = []
         if category_code and category_code not in ["Нет данных", "Выберите категорию"]:
             filter_display_parts.append(f"категории '{self._get_name_from_code(category_code, 'category')}'")
@@ -501,8 +580,6 @@ class FixtureApp(ctk.CTk):
             self.fixture_list_textbox.configure(state="disabled")
             return
 
-        # Заголовки столбцов с фиксированной шириной
-        # Изменено: Объединил "Версия" и "Пром. Версия" в один столбец "Версия"
         header = (
             f"{'ID':<4} | {'Категория':<10} | {'Серия':<8} | {'Изделие':<10} | {'Операция':<10} | "
             f"{'Оснастка':<10} | {'AA':<5} | {'BB':<5} | {'CC':<5} | {'Версия':<8} | "
@@ -511,9 +588,9 @@ class FixtureApp(ctk.CTk):
         self.fixture_list_textbox.insert("end", header + "\n")
         self.fixture_list_textbox.insert("end", "-" * len(header) + "\n")
 
+        current_line = 3  # Start counting from line 3 for data rows
+
         for fixture in fixtures:
-            # Получаем значения, убеждаемся, что они не None
-            # Используем CategoryName, SeriesName, ItemNumberName, OperationName для отображения
             category_display = fixture.get('CategoryName', fixture.get('Category', ''))
             series_display = fixture.get('SeriesName', fixture.get('Series', ''))
             item_display = fixture.get('ItemNumberName', fixture.get('ItemNumber', ''))
@@ -525,13 +602,11 @@ class FixtureApp(ctk.CTk):
             part_quantity = fixture.get('PartQuantity', '')
             assembly_version_code = fixture.get('AssemblyVersionCode', '')
             intermediate_version = fixture.get('IntermediateVersion', '')
-            base_path = fixture.get('BasePath', '')
+            full_id_string_display = fixture.get('FullIDString', '')
 
-            # Объединяем AssemblyVersionCode и IntermediateVersion
             combined_version_vvw = f"{assembly_version_code}{intermediate_version}"
 
-            # Форматирование данных с фиксированной шириной
-            line = (
+            line_text = (
                 f"{fixture['id']:<4} | "
                 f"{category_display:<10} | "
                 f"{series_display:<8} | "
@@ -542,9 +617,11 @@ class FixtureApp(ctk.CTk):
                 f"{part_in_assembly:<5} | "
                 f"{part_quantity:<5} | "
                 f"{combined_version_vvw:<8} | "
-                f"{base_path:<40}"
+                f"{full_id_string_display:<40}"
             )
-            self.fixture_list_textbox.insert("end", line + "\n")
+            self.fixture_list_textbox.insert("end", line_text + "\n")
+            self.fixture_id_line_map[current_line] = fixture['id']
+            current_line += 1
 
         self.fixture_list_textbox.configure(state="disabled")
 
@@ -562,12 +639,10 @@ class FixtureApp(ctk.CTk):
                 if item['CategoryCode'] == code:
                     return item['CategoryName']
         elif type_of_code == 'series':
-            # Примечание: self.series_data уже отфильтрована по категории
             for item in self.series_data:
                 if item['SeriesCode'] == code:
                     return item['SeriesName']
         elif type_of_code == 'item_number':
-            # Примечание: self.items_data уже отфильтрована по категории и серии
             for item in self.items_data:
                 if item['ItemNumberCode'] == code:
                     return item['ItemNumberName']
@@ -575,31 +650,23 @@ class FixtureApp(ctk.CTk):
             for item in self.operations_data:
                 if item['OperationCode'] == code:
                     return item['OperationName']
-        return code  # Возвращаем код, если имя не найдено
+        return code
 
-    # Валидация для AA, BB, CC (должны быть 2 цифры или Base36)
     def validate_aa_bb_input(self, event=None):
-        # AA, BB, CC - это UniqueParts, PartInAssembly, PartQuantity
-        # Предполагаем, что они 2 символа, могут быть цифрами или Base36
-        # Здесь мы просто проверяем длину и формат, если они не пустые
-
         aa_str = self.unique_parts_aa_var.get().upper()
         bb_str = self.part_in_assembly_bb_var.get().upper()
         cc_str = self.part_quantity_cc_var.get().upper()
 
         is_valid = True
 
-        # Проверка AA
         if aa_str and (len(aa_str) != 2 or not all(c in '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ' for c in aa_str)):
             self.set_status("AA должно быть 2 символа (0-9, A-Z).", is_error=True)
             is_valid = False
 
-        # Проверка BB
         if bb_str and (len(bb_str) != 2 or not all(c in '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ' for c in bb_str)):
             self.set_status("BB должно быть 2 символа (0-9, A-Z).", is_error=True)
             is_valid = False
 
-        # Проверка CC
         if cc_str and (len(cc_str) != 2 or not all(c in '01234456789ABCDEFGHIJKLMNOPQRSTUVWXYZ' for c in cc_str)):
             self.set_status("CC должно быть 2 символа (0-9, A-Z).", is_error=True)
             is_valid = False
@@ -608,7 +675,6 @@ class FixtureApp(ctk.CTk):
             self.set_status("Поля AA, BB, CC валидны.", is_error=False)
         return is_valid
 
-    # Валидация для VV (Версия сборки)
     def validate_vv_input(self, event=None):
         vv_str = self.assembly_version_vv_var.get().upper()
         if vv_str and (len(vv_str) != 2 or not all(c in '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ' for c in vv_str)):
@@ -617,22 +683,21 @@ class FixtureApp(ctk.CTk):
         self.set_status("Поле VV валидно.", is_error=False)
         return True
 
-    # Валидация для W (Промежуточная версия)
     def validate_w_input(self, event=None):
         value = self.intermediate_version_w_var.get().strip().upper()
 
-        if not value:  # Пустая строка разрешена
+        if not value:
             self.set_status("Поле W валидно (пусто).", is_error=False)
             return True
 
-        if len(value) != 1:  # Должен быть ровно 1 символ, если не пустой
+        if len(value) != 1:
             self.set_status(
                 f"Промежуточная версия (W) должна быть 1 символом или пустой. Значение '{value}' имеет длину {len(value)}.",
                 is_error=True)
             return False
 
         valid_chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-        forbidden_chars = "IJLO"  # Исключаем, если они не используются в вашей base36
+        forbidden_chars = "IJLO"
         for char in value:
             if char not in valid_chars or char in forbidden_chars:
                 self.set_status(
@@ -644,19 +709,13 @@ class FixtureApp(ctk.CTk):
         return True
 
     def import_excel_data_command(self):
-        """
-        Обрабатывает импорт данных из Excel в БД по нажатию кнопки.
-        Удаляет существующую БД и создает ее заново с данными из Excel.
-        """
         if messagebox.askyesno("Подтверждение импорта",
                                "Это удалит существующую базу данных и импортирует данные из Excel заново. Продолжить?"):
             self.set_status("Начинается импорт данных из Excel...", is_error=False)
 
-            # 1. Закрыть текущее соединение с БД, если оно открыто
             if self.db_manager.conn:
                 self.db_manager.close()
 
-            # 2. Удалить существующий файл БД
             db_file_path = os.path.join(self.db_manager.base_db_dir, self.db_manager.db_name)
             if os.path.exists(db_file_path):
                 try:
@@ -667,25 +726,59 @@ class FixtureApp(ctk.CTk):
                     messagebox.showerror("Ошибка", f"Не удалось удалить существующую базу данных: {e}")
                     return
 
-            # 3. Пересоздать менеджер БД (это создаст новую БД и таблицы)
-            # Важно: создать новый экземпляр, чтобы __init__ был вызван заново
             self.db_manager = FixtureDBManager(db_name="my_fixtures_app.db", base_db_dir="fixture_database_root_app")
 
-            # 4. Выполнить импорт из Excel
-            excel_file_path = "classifier_data.xlsx"  # Убедитесь, что этот путь верен относительно main_gui.py
+            excel_file_path = "classifier_data.xlsx"
             importer = excel_importer.ExcelClassifierImporter(self.db_manager)
 
             if importer.import_from_excel(excel_file_path):
                 self.set_status("Импорт данных из Excel завершен успешно.", is_error=False)
-                self.load_all_combobox_data()  # Перезагрузить данные в комбобоксах
-                # Обновляем список оснасток для текущего выбранного изделия (или дефолтного)
-                self._refresh_fixture_list_with_current_selection()  # Использовать универсальный метод
+                self.load_all_combobox_data()
+                self._refresh_fixture_list_with_current_selection()
             else:
                 self.set_status("Ошибка при импорте данных из Excel. Проверьте консоль.", is_error=True)
                 messagebox.showerror("Ошибка импорта",
                                      "Произошла ошибка при импорте данных из Excel. Проверьте консоль для деталей.")
         else:
             self.set_status("Импорт из Excel отменен.", is_error=False)
+
+    def delete_fixture_command(self):
+        """Deletes the selected fixture from the database and its associated folder."""
+        if self.selected_fixture_id_in_list is None:
+            self.set_status("Ошибка: Не выбрана оснастка для удаления.", is_error=True)
+            messagebox.showerror("Ошибка удаления", "Пожалуйста, выберите оснастку из списка для удаления.")
+            return
+
+        fixture_data = self.db_manager.get_fixture_id_by_id(self.selected_fixture_id_in_list)
+        if not fixture_data:
+            self.set_status(f"Ошибка: Оснастка с ID {self.selected_fixture_id_in_list} не найдена в БД.", is_error=True)
+            messagebox.showerror("Ошибка удаления", "Выбранная оснастка не найдена в базе данных.")
+            return
+
+        full_id_string = fixture_data.get('FullIDString', 'N/A')
+        base_path = fixture_data.get('BasePath')
+
+        confirm = messagebox.askyesno("Подтверждение удаления",
+                                      f"Вы уверены, что хотите удалить оснастку:\nID: {full_id_string}\nПуть: {base_path}\n\nЭто действие необратимо и удалит папку на диске!")
+
+        if confirm:
+            if self.db_manager.delete_fixture_id(self.selected_fixture_id_in_list, delete_files=True):
+                self.set_status(f"Оснастка ID {self.selected_fixture_id_in_list} ({full_id_string}) успешно удалена.",
+                                is_error=False)
+                self.selected_fixture_id_in_list = None  # Reset selection
+                self.fixture_list_textbox.tag_remove("highlight", "1.0", "end")  # Clear highlight
+                self._refresh_fixture_list_with_current_selection()
+                self.update_fixture_number_combobox()  # Refresh TT combobox as well
+            else:
+                self.set_status(
+                    f"Не удалось удалить оснастку ID {self.selected_fixture_id_in_list}. Проверьте консоль.",
+                    is_error=True)
+        else:
+            self.set_status("Удаление отменено.")
+
+    def on_closing(self):
+        self.db_manager.close()
+        self.destroy()
 
 
 if __name__ == "__main__":
