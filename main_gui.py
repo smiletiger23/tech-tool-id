@@ -436,12 +436,22 @@ class FixtureApp(ctk.CTk):
             messagebox.showerror("Ошибка", f"Ошибка парсинга ID '{full_id_string}'.")
             return
 
+        # NEW: Construct the specific folder name for the assembly version (KKK.SNN.DTT.AA0000-VVW)
+        folder_version_name = (
+            f"{parsed_id_for_path['Category']}."
+            f"{parsed_id_for_path['Series']}{parsed_id_for_path['ItemNumber']}."
+            f"{parsed_id_for_path['Operation']}{parsed_id_for_path['FixtureNumber']}."
+            f"{parsed_id_for_path['UniqueParts']}0000-"  # BB and CC are replaced with 0000
+            f"{parsed_id_for_path['AssemblyVersionCode']}"
+            f"{parsed_id_for_path['IntermediateVersion'] if parsed_id_for_path['IntermediateVersion'] else ''}"
+        )
+
         base_folder_path = os.path.join(
             self.db_manager.base_db_dir,
             parsed_id_for_path['Category'],
             f"{parsed_id_for_path['Category']}.{parsed_id_for_path['Series']}{parsed_id_for_path['ItemNumber']}",
             f"{parsed_id_for_path['Category']}.{parsed_id_for_path['Series']}{parsed_id_for_path['ItemNumber']}.{parsed_id_for_path['Operation']}{parsed_id_for_path['FixtureNumber']}",
-            full_id_string
+            folder_version_name  # Use the newly constructed folder name
         )
 
         try:

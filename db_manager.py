@@ -83,7 +83,7 @@ class FixtureDBManager:
                     PartQuantity TEXT NOT NULL,
                     AssemblyVersionCode TEXT NOT NULL,
                     IntermediateVersion TEXT, -- Может быть пустым
-                    BasePath TEXT NOT NULL UNIQUE, -- Этот столбец должен быть уникальным
+                    BasePath TEXT NOT NULL, -- УДАЛЕНО: UNIQUE constraint
                     FullIDString TEXT NOT NULL UNIQUE,
                     FOREIGN KEY (Category) REFERENCES Categories(CategoryCode),
                     FOREIGN KEY (Category, Series) REFERENCES Series(CategoryCode, SeriesCode),
@@ -259,17 +259,29 @@ class FixtureDBManager:
             print(f"Не удалось распарсить ID строку: {full_id_string}")
             return None
 
+        # Проверяем, существует ли уже оснастка с таким же FullIDString
         self.cursor.execute("SELECT id FROM FixtureIDs WHERE FullIDString = ?", (full_id_string,))
         if self.cursor.fetchone():
             print(f"Оснастка с FullIDString '{full_id_string}' уже существует. Добавление отменено.")
             return None
 
+        # Формируем имя папки для версии сборки (KKK.SNN.DTT.AA0000-VVW)
+        folder_version_name = (
+            f"{parsed_id['Category']}."
+            f"{parsed_id['Series']}{parsed_id['ItemNumber']}."
+            f"{parsed_id['Operation']}{parsed_id['FixtureNumber']}."
+            f"{parsed_id['UniqueParts']}0000-" # BB и CC заменены на 0000
+            f"{parsed_id['AssemblyVersionCode']}"
+            f"{parsed_id['IntermediateVersion'] if parsed_id['IntermediateVersion'] else ''}"
+        )
+
+        # Формируем полный путь к папке, используя новое имя папки версии сборки
         base_path = os.path.join(
             self.base_db_dir,
             parsed_id['Category'],
             f"{parsed_id['Category']}.{parsed_id['Series']}{parsed_id['ItemNumber']}",
             f"{parsed_id['Category']}.{parsed_id['Series']}{parsed_id['ItemNumber']}.{parsed_id['Operation']}{parsed_id['FixtureNumber']}",
-            full_id_string
+            folder_version_name # Используем новое имя папки
         )
 
         try:
@@ -296,7 +308,7 @@ class FixtureDBManager:
                 parsed_id['PartQuantity'],
                 parsed_id['AssemblyVersionCode'],
                 parsed_id['IntermediateVersion'],
-                base_path,
+                base_path, # Сохраняем путь к папке сборки
                 full_id_string
             ))
             self.conn.commit()
@@ -408,8 +420,15 @@ class FixtureDBManager:
             base_path = fixture_data.get("BasePath")
             if base_path and os.path.exists(base_path):
                 try:
-                    shutil.rmtree(base_path)
-                    print(f"Папка оснастки '{base_path}' успешно удалена.")
+                    # Проверяем, есть ли другие записи в БД, использующие этот же BasePath
+                    self.cursor.execute("SELECT COUNT(*) FROM FixtureIDs WHERE BasePath = ?", (base_path,))
+                    count_referencing_path = self.cursor.fetchone()[0]
+
+                    if count_referencing_path == 1: # Если это единственная запись, ссылающаяся на этот путь
+                        shutil.rmtree(base_path)
+                        print(f"Папка оснастки '{base_path}' успешно удалена.")
+                    else:
+                        print(f"Папка оснастки '{base_path}' не будет удалена, так как на нее ссылаются другие записи ({count_referencing_path} шт.).")
                 except OSError as e:
                     print(f"Ошибка при удалении папки оснастки '{base_path}': {e}")
                     return False
