@@ -83,7 +83,7 @@ class FixtureDBManager:
                     PartQuantity TEXT NOT NULL,
                     AssemblyVersionCode TEXT NOT NULL,
                     IntermediateVersion TEXT, -- Может быть пустым
-                    BasePath TEXT NOT NULL, -- УДАЛЕНО: UNIQUE constraint
+                    BasePath TEXT NOT NULL,
                     FullIDString TEXT NOT NULL UNIQUE,
                     FOREIGN KEY (Category) REFERENCES Categories(CategoryCode),
                     FOREIGN KEY (Category, Series) REFERENCES Series(CategoryCode, SeriesCode),
@@ -201,7 +201,8 @@ class FixtureDBManager:
                 self.conn.commit()
                 return 'added'
         except sqlite3.Error as e:
-            print(f"Ошибка при обработке изделия {item_number_code} для категории {category_code} и серии {series_code}: {e}")
+            print(
+                f"Ошибка при обработке изделия {item_number_code} для категории {category_code} и серии {series_code}: {e}")
             return 'error'
 
     def get_items_by_category_and_series(self, category_code, series_code):
@@ -231,7 +232,8 @@ class FixtureDBManager:
 
             if existing_name:
                 if existing_name['OperationName'] != operation_name:
-                    self.cursor.execute("UPDATE Operations SET OperationName = ? WHERE OperationCode = ?", (operation_name, operation_code))
+                    self.cursor.execute("UPDATE Operations SET OperationName = ? WHERE OperationCode = ?",
+                                        (operation_name, operation_code))
                     self.conn.commit()
                     return 'updated'
                 else:
@@ -270,7 +272,7 @@ class FixtureDBManager:
             f"{parsed_id['Category']}."
             f"{parsed_id['Series']}{parsed_id['ItemNumber']}."
             f"{parsed_id['Operation']}{parsed_id['FixtureNumber']}."
-            f"{parsed_id['UniqueParts']}0000-" # BB и CC заменены на 0000
+            f"{parsed_id['UniqueParts']}0000-"  # BB и CC заменены на 0000
             f"{parsed_id['AssemblyVersionCode']}"
             f"{parsed_id['IntermediateVersion'] if parsed_id['IntermediateVersion'] else ''}"
         )
@@ -281,7 +283,7 @@ class FixtureDBManager:
             parsed_id['Category'],
             f"{parsed_id['Category']}.{parsed_id['Series']}{parsed_id['ItemNumber']}",
             f"{parsed_id['Category']}.{parsed_id['Series']}{parsed_id['ItemNumber']}.{parsed_id['Operation']}{parsed_id['FixtureNumber']}",
-            folder_version_name # Используем новое имя папки
+            folder_version_name  # Используем новое имя папки
         )
 
         try:
@@ -308,7 +310,7 @@ class FixtureDBManager:
                 parsed_id['PartQuantity'],
                 parsed_id['AssemblyVersionCode'],
                 parsed_id['IntermediateVersion'],
-                base_path, # Сохраняем путь к папке сборки
+                base_path,  # Сохраняем путь к папке сборки
                 full_id_string
             ))
             self.conn.commit()
@@ -410,6 +412,153 @@ class FixtureDBManager:
             print(f"Ошибка при получении всех оснасток с описаниями: {e}")
             return []
 
+    def get_latest_fixture_for_assembly(self, category, series, item_number, operation, fixture_number, unique_parts):
+        """
+        Retrieves the fixture with the latest version (VVW) for a given assembly base.
+        The base is defined by KKK.SNN.DTT.AA.
+        """
+        query = """
+            SELECT
+                AssemblyVersionCode,
+                IntermediateVersion
+            FROM
+                FixtureIDs
+            WHERE
+                Category = ? AND Series = ? AND ItemNumber = ? AND Operation = ? AND FixtureNumber = ? AND UniqueParts = ?
+            ORDER BY
+                AssemblyVersionCode DESC, IntermediateVersion DESC
+        """
+        params = (category, series, item_number, operation, fixture_number, unique_parts)
+
+        try:
+            self.cursor.execute(query, params)
+            # Fetch all results to find the truly "latest" based on custom logic
+            all_versions = self.cursor.fetchall()
+
+            latest_fixture_data = None
+            latest_version_components = None
+
+            for row in all_versions:
+                vv = row['AssemblyVersionCode']
+                w = row['IntermediateVersion'] if row['IntermediateVersion'] else ''
+                current_version_string = f"{vv}{w}"
+                current_version_components = self._parse_version_components(current_version_string)
+
+                if current_version_components['is_special_x']:
+                    # Special 'X' versions are not part of the normal ordering for "latest" in this context
+                    # If we encounter an 'X' version, we don't consider it for finding the *numeric* latest.
+                    # If the user tries to create a numeric version after an 'X' version, it should be allowed.
+                    continue
+
+                if latest_version_components is None:
+                    latest_version_components = current_version_components
+                    latest_fixture_data = row
+                else:
+                    # Compare using the custom logic
+                    if self.is_version_newer(
+                            f"{latest_version_components['vv_code']}{latest_version_components['w_code'] if latest_version_components['w_code'] is not None else ''}",
+                            current_version_string
+                    ):
+                        latest_version_components = current_version_components
+                        latest_fixture_data = row
+
+            return dict(latest_fixture_data) if latest_fixture_data else None
+
+        except sqlite3.Error as e:
+            print(f"Ошибка при получении последней версии для сборки: {e}")
+            return None
+
+    def _parse_version_components(self, version_string):
+        """
+        Parses a version string (VV or VVW) into its components for comparison.
+        Returns a dictionary: {'vv_code': str, 'w_code': str or None, 'major_int': int, 'minor_int': int, 'w_int': int or None, 'is_special_x': bool}
+        """
+        vv_code = version_string[:2]
+        w_code = version_string[2:] if len(version_string) > 2 else None
+
+        is_special_x = False
+        major_int = 0
+        minor_int = 0
+        w_int = None
+
+        if vv_code.startswith('X'):
+            is_special_x = True
+            # For 'X' versions, we don't assign numeric major/minor for comparison purposes
+            # We can still convert the second char of VV and W for internal consistency if needed,
+            # but for ordering, they are treated as non-comparable in the standard sequence.
+        else:
+            try:
+                major_int = int(vv_code[0])
+                minor_int = int(vv_code[1])
+            except ValueError:
+                # Should be caught by validate_vv_input in GUI, but for robustness
+                print(f"Warning: Non-numeric VV code '{vv_code}' encountered during parsing.")
+                is_special_x = True  # Treat as special if parsing fails unexpectedly
+
+        if w_code:
+            # Convert char to integer (A=1, B=2, ..., Z=26)
+            if 'A' <= w_code <= 'Z':
+                w_int = ord(w_code) - ord('A') + 1
+            else:
+                # If W is not a letter, treat as invalid for comparison or special
+                w_int = 0  # Or handle as error
+
+        return {
+            'vv_code': vv_code,
+            'w_code': w_code,
+            'major_int': major_int,
+            'minor_int': minor_int,
+            'w_int': w_int,
+            'is_special_x': is_special_x
+        }
+
+    def is_version_newer(self, old_version_string, new_version_string):
+        """
+        Compares two version strings (VV or VVW) based on custom rules.
+        Returns True if new_version_string is strictly newer than old_version_string.
+        """
+        old_comp = self._parse_version_components(old_version_string)
+        new_comp = self._parse_version_components(new_version_string)
+
+        # Rule: X versions are not checked for order against normal versions.
+        # If new is 'X' type, it's considered valid (True) as per user's "without check" rule.
+        if new_comp['is_special_x']:
+            return True
+        # If old is 'X' type and new is not, new is NOT strictly newer in the numeric sequence.
+        # This means a normal version cannot be "newer" than a special 'X' version in the strict sense.
+        if old_comp['is_special_x'] and not new_comp['is_special_x']:
+            return False
+        # If both are 'X' type, their relative order is not defined by this function.
+        # For simplicity, if both are 'X', we consider them not strictly newer than each other.
+        if old_comp['is_special_x'] and new_comp['is_special_x']:
+            return False  # Or True if user implies any X is newer than another X, but that's not specified.
+
+        # Compare major version (first digit of VV)
+        if new_comp['major_int'] > old_comp['major_int']:
+            return True
+        if new_comp['major_int'] < old_comp['major_int']:
+            return False
+
+        # If major versions are equal, compare minor version (second digit of VV)
+        if new_comp['minor_int'] > old_comp['minor_int']:
+            return True
+        if new_comp['minor_int'] < old_comp['minor_int']:
+            return False
+
+        # If major and minor versions are equal, compare intermediate version (W)
+        # Rule: 01A newer than 01, 01B newer than 01A
+        if new_comp['w_int'] is not None and old_comp['w_int'] is None:
+            return True  # e.g., 01A is newer than 01
+        if new_comp['w_int'] is None and old_comp['w_int'] is not None:
+            return False  # e.g., 01 is not newer than 01A
+
+        # If both have W or both don't have W, compare W values
+        if new_comp['w_int'] is not None and old_comp['w_int'] is not None:
+            return new_comp['w_int'] > old_comp['w_int']  # e.g., 01B > 01A
+
+        # If both are exactly the same (VV and W), not strictly newer
+        return False
+
     def delete_fixture_id(self, fixture_db_id, delete_files=False):
         fixture_data = self.get_fixture_id_by_id(fixture_db_id)
         if not fixture_data:
@@ -424,11 +573,12 @@ class FixtureDBManager:
                     self.cursor.execute("SELECT COUNT(*) FROM FixtureIDs WHERE BasePath = ?", (base_path,))
                     count_referencing_path = self.cursor.fetchone()[0]
 
-                    if count_referencing_path == 1: # Если это единственная запись, ссылающаяся на этот путь
+                    if count_referencing_path == 1:  # Если это единственная запись, ссылающаяся на этот путь
                         shutil.rmtree(base_path)
                         print(f"Папка оснастки '{base_path}' успешно удалена.")
                     else:
-                        print(f"Папка оснастки '{base_path}' не будет удалена, так как на нее ссылаются другие записи ({count_referencing_path} шт.).")
+                        print(
+                            f"Папка оснастки '{base_path}' не будет удалена, так как на нее ссылаются другие записи ({count_referencing_path} шт.).")
                 except OSError as e:
                     print(f"Ошибка при удалении папки оснастки '{base_path}': {e}")
                     return False
